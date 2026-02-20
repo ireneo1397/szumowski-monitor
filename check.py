@@ -5,7 +5,9 @@ import os
 TOPIC = "szumowski-alert"
 STATE_FILE = "state.txt"
 
+# POLSKIE SERWISY – pełna lista
 URLS = [
+
     # Allegro kup teraz
     "https://allegro.pl/listing?string=szumowski+dookola+swiata",
 
@@ -28,7 +30,13 @@ URLS = [
     "https://gratka.pl/szukaj?query=szumowski+dookola+swiata",
 
     # Empik
-    "https://www.empik.com/szukaj/produkt?query=szumowski+dookola+swiata"
+    "https://www.empik.com/szukaj/produkt?query=szumowski%20dookola%20swiata",
+
+    # TaniaKsiazka
+    "https://www.taniaksiazka.pl/szukaj?query=szumowski+dookola+swiata",
+
+    # Facebook Marketplace (publiczne wyniki)
+    "https://www.facebook.com/marketplace/search/?query=szumowski%20dookola%20swiata"
 ]
 
 HEADERS = {
@@ -37,62 +45,71 @@ HEADERS = {
 
 
 def notify(message):
-    requests.post(
-        f"https://ntfy.sh/{TOPIC}",
-        data=message.encode("utf-8"),
-        timeout=10
-    )
-
-
-def get_hash(text):
-    # analizujemy tylko fragment strony (wyniki)
-    fragment = text[:50000]
-    return hashlib.md5(fragment.encode()).hexdigest()
+    requests.post(f"https://ntfy.sh/{TOPIC}", data=message.encode("utf-8"))
 
 
 def load_state():
-    state = {}
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
-            for line in f:
-                url, h = line.strip().split("|")
-                state[url] = h
-    return state
+            return set(f.read().splitlines())
+    return set()
 
 
 def save_state(state):
     with open(STATE_FILE, "w") as f:
-        for url, h in state.items():
-            f.write(f"{url}|{h}\n")
+        f.write("\n".join(state))
 
 
-old_state = load_state()
-new_state = {}
+def page_active(response):
+    # sprawdza czy strona istnieje
+    if response.status_code != 200:
+        return False
 
-for url in URLS:
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        if r.status_code != 200:
-            continue
+    text = response.text.lower()
 
-        text = r.text.lower()
+    # typowe komunikaty o braku strony
+    errors = [
+        "nie znaleziono",
+        "brak ogłoszeń",
+        "no results",
+        "page not found",
+        "404"
+    ]
 
-        # ignoruj puste strony
-        if (
-            "brak wyników" in text
-            or "nie znaleziono" in text
-            or "0 wyników" in text
-        ):
-            continue
+    for e in errors:
+        if e in text:
+            return False
 
-        h = get_hash(text)
-        new_state[url] = h
+    return True
 
-        # jeśli strona była wcześniej i się zmieniła
-        if url in old_state and old_state[url] != h:
-            notify(f"Nowa oferta lub zmiana:\n{url}")
 
-    except:
-        pass
+def main():
+    known = load_state()
+    new_known = set(known)
 
-save_state(new_state)
+    for url in URLS:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15)
+
+            if not page_active(r):
+                continue
+
+            text = r.text.lower()
+
+            # warunki dopasowania
+            if "szumowski" in text and "komik" in text or "dookola" in text:
+
+                page_hash = hashlib.md5(text.encode()).hexdigest()
+
+                if page_hash not in known:
+                    notify(f"NOWA oferta możliwa:\n{url}")
+                    new_known.add(page_hash)
+
+        except:
+            pass
+
+    save_state(new_known)
+
+
+if __name__ == "__main__":
+    main()
