@@ -5,9 +5,7 @@ import os
 TOPIC = "szumowski-alert"
 STATE_FILE = "state.txt"
 
-# POLSKIE SERWISY – pełna lista
 URLS = [
-
     # Allegro kup teraz
     "https://allegro.pl/listing?string=szumowski+dookola+swiata",
 
@@ -30,18 +28,18 @@ URLS = [
     "https://gratka.pl/szukaj?query=szumowski+dookola+swiata",
 
     # Empik
-    "https://www.empik.com/szukaj/produkt?query=szumowski%20dookola%20swiata",
-
-    # TaniaKsiazka
-    "https://www.taniaksiazka.pl/szukaj?query=szumowski+dookola+swiata",
-
-    # Facebook Marketplace (publiczne wyniki)
-    "https://www.facebook.com/marketplace/search/?query=szumowski%20dookola%20swiata"
+    "https://www.empik.com/szukaj/produkt?q=szumowski+dookola+swiata"
 ]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
+
+KEYWORDS = [
+    "szumowski",
+    "dookola",
+    "komik"
+]
 
 
 def notify(message):
@@ -60,56 +58,42 @@ def save_state(state):
         f.write("\n".join(state))
 
 
+def hash_text(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def page_active(response):
     # sprawdza czy strona istnieje
-    if response.status_code != 200:
-        return False
-
-    text = response.text.lower()
-
-    # typowe komunikaty o braku strony
-    errors = [
-        "nie znaleziono",
-        "brak ogłoszeń",
-        "no results",
-        "page not found",
-        "404"
-    ]
-
-    for e in errors:
-        if e in text:
-            return False
-
-    return True
+    return response.status_code == 200 and len(response.text) > 1000
 
 
-def main():
-    known = load_state()
-    new_known = set(known)
+old_state = load_state()
+new_state = set()
 
-    for url in URLS:
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=15)
+for url in URLS:
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
 
-            if not page_active(r):
-                continue
+        if not page_active(r):
+            continue
 
-            text = r.text.lower()
+        text = r.text.lower()
 
-            # warunki dopasowania
-            if "szumowski" in text and "komik" in text or "dookola" in text:
+        if all(k in text for k in KEYWORDS):
+            page_hash = hash_text(text)
+            new_state.add(page_hash)
 
-                page_hash = hashlib.md5(text.encode()).hexdigest()
+            if page_hash not in old_state:
 
-                if page_hash not in known:
-                    notify(f"NOWA oferta możliwa:\n{url}")
-                    new_known.add(page_hash)
+                message = f"Nowa oferta możliwa:\n{url}"
 
-        except:
-            pass
+                # dodatkowa informacja o licytacji
+                if "offertypeauction" in url:
+                    message += "\nTyp: LICYTACJA"
 
-    save_state(new_known)
+                notify(message)
 
+    except Exception:
+        continue
 
-if __name__ == "__main__":
-    main()
+save_state(new_state)
