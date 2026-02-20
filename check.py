@@ -1,117 +1,80 @@
 import requests
-import hashlib
 import os
 
 TOPIC = "szumowski-alert"
 
-URLS = [
-    # Allegro
-    "https://allegro.pl/listing?string=komik%20dookola%20swiata%20szumowski",
+# Plik z zapamiętanymi ofertami
+SEEN_FILE = "seen.txt"
 
-    # Allegro Lokalnie
-    "https://allegrolokalnie.pl/oferty/q-komik-dookola-swiata-szumowski",
+# Wczytaj zapisane linki
+if os.path.exists(SEEN_FILE):
+    with open(SEEN_FILE, "r") as f:
+        seen_links = set(f.read().splitlines())
+else:
+    seen_links = set()
+
+# Wszystkie serwisy (w tym licytacje Allegro)
+URLS = [
+    # Allegro - kup teraz
+    "https://allegro.pl/listing?string=szumowski%20dooko%C5%82a%20%C5%9Bwiata",
+
+    # Allegro - tylko aukcje (licytacje)
+    "https://allegro.pl/listing?string=szumowski%20dooko%C5%82a%20%C5%9Bwiata&offerTypeAuction=1",
 
     # OLX
-    "https://www.olx.pl/oferty/q-komik-dookola-swiata-szumowski/",
+    "https://www.olx.pl/oferty/q-szumowski-dooko%C5%82a-%C5%9Bwiata/",
+
+    # Allegro Lokalnie
+    "https://allegrolokalnie.pl/oferty/q-szumowski-dookola-swiata",
 
     # Vinted
-    "https://www.vinted.pl/catalog?search_text=komik%20dookola%20swiata%20szumowski",
-
-    # Facebook Marketplace
-    "https://www.facebook.com/marketplace/search/?query=komik%20dookola%20swiata%20szumowski",
-
-    # Empik
-    "https://www.empik.com/szukaj/produkt?q=komik%20dookola%20swiata",
-
-    # eBay
-    "https://www.ebay.pl/sch/i.html?_nkw=komik+dookola+swiata+szumowski"
+    "https://www.vinted.pl/catalog?search_text=szumowski+dookoła+świata"
 ]
-
-STATE_FILE = "state.txt"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
-KEYWORDS = ["komik", "szumowski"]
-
-BAD_WORDS = [
-    "404",
-    "page not found",
-    "nie znaleziono",
-    "brak wyników",
-    "oferta wygasła",
-    "oferta nieaktualna"
-]
-
-
 def notify(message):
-    requests.post(
-        f"https://ntfy.sh/{TOPIC}",
-        data=message.encode("utf-8")
-    )
+    requests.post(f"https://ntfy.sh/{TOPIC}", data=message.encode("utf-8"))
 
-
-def get_hash(text):
-    # bierzemy tylko pierwszą część strony (wyniki)
-    fragment = text[:60000]
-    return hashlib.md5(fragment.encode()).hexdigest()
-
-
-def page_valid(text):
-    text = text.lower()
-    for bad in BAD_WORDS:
-        if bad in text:
-            return False
-    return True
-
-
-def contains_keywords(text):
-    text = text.lower()
-    return all(word in text for word in KEYWORDS)
-
-
-# wczytaj poprzedni stan
-old_state = {}
-if os.path.exists(STATE_FILE):
-    with open(STATE_FILE, "r") as f:
-        for line in f:
-            name, h = line.strip().split("|")
-            old_state[name] = h
-
-new_state = {}
+new_links = set()
 
 for url in URLS:
     try:
-        r = requests.get(url, timeout=15, headers=HEADERS)
-
+        r = requests.get(url, headers=HEADERS, timeout=15)
         if r.status_code != 200:
             continue
 
         text = r.text.lower()
 
-        if not page_valid(text):
-            continue
+        # Szukaj linków do ofert
+        parts = text.split('href="')
 
-        if not contains_keywords(text):
-            continue
+        for part in parts:
+            if part.startswith("https"):
+                link = part.split('"')[0]
 
-        h = get_hash(text)
-        new_state[url] = h
+                # Filtr: musi zawierać szumowski
+                if "szumowski" in link:
 
-        # pierwsze uruchomienie — nie wysyłaj
-        if url not in old_state:
-            continue
+                    # Jeśli nowy link
+                    if link not in seen_links:
+                        new_links.add(link)
 
-        # zmiana zawartości (nowa oferta / zmiana ceny)
-        if old_state[url] != h:
-            notify(f"Zmiana lub nowa oferta:\n{url}")
+                        # Sprawdź czy aktywny
+                        try:
+                            test = requests.get(link, headers=HEADERS, timeout=10)
+                            if test.status_code == 200:
+                                notify(f"Nowa oferta lub licytacja:\n{link}")
+                        except:
+                            pass
 
     except:
         pass
 
-
-# zapisz nowy stan
-with open(STATE_FILE, "w") as f:
-    for url, h in new_state.items():
-        f.write(f"{url}|{h}\n")
+# Zapisz nowe linki
+if new_links:
+    with open(SEEN_FILE, "a") as f:
+        for link in new_links:
+            f.write(link + "\n")
