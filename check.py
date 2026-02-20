@@ -1,191 +1,106 @@
 import requests
 import re
-import json
 import os
-import time
+import unicodedata
 
 TOPIC = "szumowski-alert"
-STATE_FILE = "offers_state.json"
+STATE_FILE = "links.txt"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
-# --- WIELE ZAPYTAŃ (STAŁE) ---
-QUERIES = [
-    "szumowski+dookola+swiata",
-    "komik+dookola+swiata",
-    "komik+szumowski",
-    "piotr+szumowski+ksiazka",
-    "szumowski+komik"
+URLS = [
+    "https://allegro.pl/listing?string=komik+dookola+swiata+szumowski",
+    "https://allegro.pl/listing?string=komik+dookola+swiata+szumowski&offerTypeAuction=1",
+    "https://allegrolokalnie.pl/oferty/q-szumowski-dookola-swiata",
+    "https://www.olx.pl/oferty/q-szumowski-dookola-swiata/",
+    "https://www.vinted.pl/catalog?search_text=szumowski+dookola+swiata",
+    "https://sprzedajemy.pl/szukaj?query=szumowski+dookola+swiata",
+    "https://gratka.pl/szukaj?query=szumowski+dookola+swiata",
 ]
 
-# --- POLSKIE SERWISY ---
-BASE_URLS = [
-    "https://allegro.pl/listing?string={}",
-    "https://allegro.pl/listing?string={}&offerTypeAuction=1",
-    "https://www.olx.pl/oferty/q-{}/",
-    "https://www.vinted.pl/catalog?search_text={}",
-    "https://sprzedajemy.pl/szukaj?query={}",
-    "https://gratka.pl/szukaj?query={}"
-]
+# --- normalizacja tekstu (usuwa polskie znaki) ---
+def normalize(text):
+    text = text.lower()
+    text = unicodedata.normalize('NFD', text)
+    text = text.encode('ascii', 'ignore').decode('utf-8')
+    return text
 
-SEARCH_URLS = []
-for q in QUERIES:
-    for base in BASE_URLS:
-        SEARCH_URLS.append(base.format(q))
+# --- wysyłanie powiadomienia ---
+def notify(message):
+    requests.post(f"https://ntfy.sh/{TOPIC}", data=message.encode("utf-8"))
 
+# --- wczytaj zapisane linki ---
+def load_links():
+    if not os.path.exists(STATE_FILE):
+        return set()
+    with open(STATE_FILE, "r") as f:
+        return set(f.read().splitlines())
 
-# --- POWIADOMIENIE ---
-def notify(msg):
-    try:
-        requests.post(
-            f"https://ntfy.sh/{TOPIC}",
-            data=msg.encode("utf-8"),
-            timeout=10
-        )
-    except:
-        pass
+# --- zapisz linki ---
+def save_links(links):
+    with open(STATE_FILE, "w") as f:
+        for link in links:
+            f.write(link + "\n")
 
+# --- sprawdzanie czy to właściwa książka (TYLKO CZĘŚĆ 1) ---
+def is_part_one(text):
+    t = normalize(text)
 
-# --- STAN ---
-def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-
-def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f)
-
-
-# --- CENA ---
-def get_price(text):
-    m = re.search(r'(\d[\d\s]{0,6}[,\.]?\d{0,2})\s?zł', text)
-    if m:
-        price = m.group(1).replace(" ", "").replace(",", ".")
-        try:
-            return float(price)
-        except:
-            return None
-    return None
-
-
-# --- FILTR KSIĄŻKI (CZĘŚĆ 1) ---
-def valid_book(title):
-    title = title.lower()
-
-    # musi zawierać coś z tego
-    keywords = [
-        "szumowski",
-        "komik dookoła",
-        "komik dookola"
-    ]
-
-    if not any(k in title for k in keywords):
+    # musi zawierać:
+    if "komik" not in t:
+        return False
+    if "dookola" not in t:
+        return False
+    if "swiata" not in t:
+        return False
+    if "szumowski" not in t:
         return False
 
-    # wykluczenie części 2
-    exclude = [
-        "część 2",
+    # NIE może zawierać:
+    banned = [
+        " 2",
         "czesc 2",
         "tom 2",
-        "t.2",
-        "cz.2",
-        "część druga"
+        "dookola swiata 2"
     ]
 
-    for e in exclude:
-        if e in title:
+    for b in banned:
+        if b in t:
             return False
 
     return True
 
+# --- główna logika ---
+seen_links = load_links()
+new_links = set()
 
-# --- WYCIĄGANIE LINKÓW ---
-def extract_links(html):
-    links = set()
-
-    patterns = [
-        r'https://allegro\.pl/oferta/[^\"]+',
-        r'https://www\.olx\.pl/[^\"]+\.html',
-        r'https://www\.vinted\.pl/items/[^\"]+',
-        r'https://sprzedajemy\.pl/[^\"]+',
-        r'https://gratka\.pl/[^\"]+'
-    ]
-
-    for p in patterns:
-        found = re.findall(p, html)
-        for link in found:
-            links.add(link.split("?")[0])
-
-    # limit dla stabilności GitHub
-    return list(links)[:50]
-
-
-# --- SPRAWDZENIE OFERTY ---
-def check_offer(url):
+for url in URLS:
     try:
-        r = requests.get(url, headers=HEADERS, timeout=10)
-        if r.status_code != 200:
-            return None, None
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        text = r.text
 
-        text = r.text.lower()
-
-        title_match = re.search(r'<title>(.*?)</title>', text)
-        title = title_match.group(1) if title_match else ""
-
-        if not valid_book(title):
-            return None, None
-
-        price = get_price(text)
-
-        return title, price
-
-    except:
-        return None, None
-
-
-# --- GŁÓWNA LOGIKA ---
-state = load_state()
-new_state = {}
-
-for search_url in SEARCH_URLS:
-    try:
-        r = requests.get(search_url, headers=HEADERS, timeout=10)
-        html = r.text.lower()
-
-        links = extract_links(html)
+        # znajdź linki ofert
+        links = re.findall(r'https://[^\s"<>]+', text)
 
         for link in links:
-            title, price = check_offer(link)
-
-            if not title:
+            if link in seen_links:
                 continue
 
-            new_state[link] = price
+            # sprawdź czy w okolicy linku jest tekst oferty
+            fragment = text.lower()
+            if link.lower() in fragment:
+                start = fragment.find(link.lower())
+                context = fragment[max(0, start-200):start+200]
 
-            # NOWA OFERTA
-            if link not in state:
-                notify(f"NOWA OFERTA\n{price} zł\n{link}")
-
-            # ZMIANA CENY
-            else:
-                old_price = state[link]
-                if price and old_price and price != old_price:
-                    notify(f"ZMIANA CENY\n{old_price} → {price} zł\n{link}")
-
-            time.sleep(0.7)
+                if is_part_one(context):
+                    notify(f"NOWA OFERTA (część 1):\n{link}")
+                    new_links.add(link)
 
     except:
         pass
 
-
-# --- ZNIKNIĘTE OFERTY ---
-for link in state:
-    if link not in new_state:
-        notify(f"OFERTA ZNIKNĘŁA\n{link}")
-
-save_state(new_state)
+# zapisz tylko nowe + stare
+seen_links.update(new_links)
+save_links(seen_links)
