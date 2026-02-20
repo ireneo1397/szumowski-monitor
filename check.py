@@ -1,16 +1,18 @@
 import requests
 import hashlib
 import os
+import time
 
 TOPIC = "szumowski-alert"
 STATE_FILE = "state.txt"
 
+# POLSKIE SERWISY (tylko)
 URLS = [
     # Allegro kup teraz
-    "https://allegro.pl/listing?string=szumowski+dookola+swiata",
+    "https://allegro.pl/listing?string=szumowski+dooko%C5%82a+%C5%9Bwiata",
 
     # Allegro licytacje
-    "https://allegro.pl/listing?string=szumowski+dookola+swiata&offerTypeAuction=1",
+    "https://allegro.pl/listing?string=szumowski+dooko%C5%82a+%C5%9Bwiata&offerTypeAuction=1",
 
     # Allegro Lokalnie
     "https://allegrolokalnie.pl/oferty/q-szumowski-dookola-swiata",
@@ -18,7 +20,7 @@ URLS = [
     # OLX
     "https://www.olx.pl/oferty/q-szumowski-dookola-swiata/",
 
-    # Vinted
+    # Vinted PL
     "https://www.vinted.pl/catalog?search_text=szumowski+dookola+swiata",
 
     # Sprzedajemy
@@ -26,24 +28,41 @@ URLS = [
 
     # Gratka
     "https://gratka.pl/szukaj?query=szumowski+dookola+swiata",
-
-    # Empik
-    "https://www.empik.com/szukaj/produkt?q=szumowski+dookola+swiata"
 ]
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 }
 
+# SZUKANE FRAZY (różne warianty nazwy)
 KEYWORDS = [
     "szumowski",
-    "dookola",
-    "komik"
+    "dookoła świata",
+    "dookola swiata",
+    "komik dookoła świata",
+    "komik dookola swiata"
+]
+
+# FRAZY DO WYKLUCZENIA (część 2 – czerwona)
+EXCLUDE = [
+    "część 2",
+    "czesc 2",
+    "tom 2",
+    "część druga",
+    "czesc druga",
+    "2"
 ]
 
 
 def notify(message):
-    requests.post(f"https://ntfy.sh/{TOPIC}", data=message.encode("utf-8"))
+    try:
+        requests.post(
+            f"https://ntfy.sh/{TOPIC}",
+            data=message.encode("utf-8"),
+            timeout=10
+        )
+    except:
+        pass
 
 
 def load_state():
@@ -55,45 +74,69 @@ def load_state():
 
 def save_state(state):
     with open(STATE_FILE, "w") as f:
-        f.write("\n".join(state))
+        for item in state:
+            f.write(item + "\n")
 
 
-def hash_text(text):
-    return hashlib.sha256(text.encode()).hexdigest()
+def get_hash(text):
+    return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
-def page_active(response):
-    # sprawdza czy strona istnieje
-    return response.status_code == 200 and len(response.text) > 1000
+def valid_offer(text):
+    text = text.lower()
+
+    # musi zawierać słowa kluczowe
+    if not any(k in text for k in KEYWORDS):
+        return False
+
+    # nie może zawierać informacji o części 2
+    if any(e in text for e in EXCLUDE):
+        return False
+
+    return True
 
 
-old_state = load_state()
-new_state = set()
+def check_urls():
+    state = load_state()
+    new_state = set(state)
 
-for url in URLS:
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
+    for url in URLS:
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15)
 
-        if not page_active(r):
-            continue
+            # sprawdzenie czy strona działa
+            if r.status_code != 200:
+                continue
 
-        text = r.text.lower()
+            text = r.text.lower()
 
-        if all(k in text for k in KEYWORDS):
-            page_hash = hash_text(text)
-            new_state.add(page_hash)
+            # sprawdzenie czy to właściwa książka (część 1)
+            if not valid_offer(text):
+                continue
 
-            if page_hash not in old_state:
+            # hash strony (wykrywa zmiany ceny/opisu)
+            page_hash = get_hash(text[:5000])  # tylko fragment – szybciej
 
-                message = f"Nowa oferta możliwa:\n{url}"
+            key = f"{url}|{page_hash}"
 
-                # dodatkowa informacja o licytacji
-                if "offertypeauction" in url:
-                    message += "\nTyp: LICYTACJA"
+            if key not in state:
+                message = f"NOWA lub ZMIENIONA oferta:\n{url}"
+
+                # informacja o licytacji
+                if "auction" in url or "licytac" in text:
+                    message += "\n(Uwaga: możliwa licytacja)"
 
                 notify(message)
+                new_state.add(key)
 
-    except Exception:
-        continue
+        except:
+            # błąd strony – pomijamy
+            continue
 
-save_state(new_state)
+        time.sleep(2)  # żeby nie blokowali
+
+    save_state(new_state)
+
+
+if __name__ == "__main__":
+    check_urls()
