@@ -1,0 +1,18 @@
+name: Check offers
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+      - name: Install requests
+        run: pip install requests
+      - name: Run script
+        run: python check.py
